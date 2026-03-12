@@ -14,6 +14,7 @@ import math
 import asyncio
 import hashlib
 import datetime
+import re
 import networkx as nx
 import geopandas as gpd
 from typing import List, Dict, Optional
@@ -258,11 +259,26 @@ async def lookup_area(city, name):
 
 async def search_areas(city, query, limit=10):
     db = get_database()
+    safe_q = re.escape(query)
+    # Match the start of any word (avoids finding 'Ram' in 'Santoshapuram')
     cur = db.city_areas.find(
-        {"city": city, "name": {"$regex": query, "$options": "i"}},
+        {"city": city, "name": {"$regex": f"\\b{safe_q}", "$options": "i"}},
         {"_id": 0, "name": 1, "lat": 1, "lon": 1}
-    ).limit(limit)
-    return await cur.to_list(length=limit)
+    ).limit(limit * 4)  # over-fetch to handle duplicates gracefully
+    
+    docs = await cur.to_list(length=limit * 4)
+    
+    seen = set()
+    unique = []
+    for d in docs:
+        # Avoid showing 5 identical "Ram Nagar" entries
+        if d["name"] not in seen:
+            seen.add(d["name"])
+            unique.append(d)
+            if len(unique) == limit:
+                break
+                
+    return unique
 
 
 # ─── Station fetch ────────────────────────────────────────────────────────────

@@ -59,6 +59,7 @@ const AreaAutocomplete = ({ city, placeholder, value, onChange, onSelect, icon, 
     const [open, setOpen] = useState(false);
     const ref = useRef(null);
     const debounce = useRef(null);
+    const lastFetchId = useRef(0);
 
     useEffect(() => { setQuery(value || ''); }, [value]);
 
@@ -66,12 +67,19 @@ const AreaAutocomplete = ({ city, placeholder, value, onChange, onSelect, icon, 
         if (!q || q.length < 2) { setSuggestions([]); setOpen(false); return; }
         clearTimeout(debounce.current);
         debounce.current = setTimeout(async () => {
+            const currentFetchId = ++lastFetchId.current;
             try {
                 const res = await fetch(`${API}/areas/search?city=${city}&q=${encodeURIComponent(q)}`);
                 const data = await res.json();
-                setSuggestions(data || []);
-                setOpen(true);
-            } catch { setSuggestions([]); }
+                if (currentFetchId === lastFetchId.current) {
+                    setSuggestions(data || []);
+                    setOpen(true);
+                }
+            } catch {
+                if (currentFetchId === lastFetchId.current) {
+                    setSuggestions([]);
+                }
+            }
         }, 250);
     }, [city]);
 
@@ -328,17 +336,7 @@ const MapView = ({ center, isFullScreen = false, cityLocations = [], selectedLoc
                 <MapUpdater center={center} />
                 <MapResizer />
 
-                {(cityLocations || []).filter(l => l.aqi).map(loc => (
-                    <Marker key={loc.name} position={[loc.lat, loc.lon]}
-                        eventHandlers={{ click: () => onLocationSelect && onLocationSelect(loc.name) }}>
-                        <Popup>
-                            <div style={{ textAlign: 'center', padding: 4 }}>
-                                <strong style={{ color: '#1e293b' }}>{loc.name}</strong><br />
-                                <span style={{ color: getAqiColor(loc.aqi), fontWeight: 800 }}>AQI {loc.aqi?.toFixed(0) || 'N/A'}</span>
-                            </div>
-                        </Popup>
-                    </Marker>
-                ))}
+                {/* Only Routing (Start/End) and Fire markers are shown on the map */}
 
                 {/* Start marker */}
                 {startArea && (

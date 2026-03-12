@@ -6,7 +6,7 @@ from app.services.fetchers.overpass import fetch_city_areas, fetch_osm_sources
 from app.services.fetchers.meteo import fetch_meteo_data, fetch_cams_data
 from app.services.fetchers.firms import fetch_firms_data
 from app.services.core_logic.apportionment import apportion_sources
-from app.services.core_logic.forecasting import generate_ensemble_forecast
+from app.services.core_logic.forecasting import generate_xgb_forecast
 
 POLLUTANTS = ['pm25', 'pm10', 'o3', 'no2', 'so2', 'co', 'voc']
 
@@ -142,11 +142,20 @@ async def hourly_pipeline():
                 }
                 
                 await db.aqi_snapshots.insert_one(snapshot)
-                
-                # 5. Generate Forecasts
-                forecasts = generate_ensemble_forecast(loc, base_pollutants, [meteo], hours_ahead=24)
-                if forecasts:
-                    await db.aqi_forecasts.insert_many(forecasts)
+
+                # 5. XGBoost Forecast (clear stale forecasts then insert fresh)
+                try:
+                    forecasts = generate_xgb_forecast(
+                        loc, base_pollutants, meteo, hours_ahead=24
+                    )
+                    if forecasts:
+                        await db.aqi_forecasts.delete_many(
+                            {"city": city, "location": loc["name"]}
+                        )
+                        await db.aqi_forecasts.insert_many(forecasts)
+                        print(f"  [XGBoost] Saved {len(forecasts)} forecasts for {loc['name']}")
+                except Exception as fe:
+                    print(f"  [XGBoost] Forecast error for {loc['name']}: {fe}")
                     
             except Exception as e:
                 print(f"Error processing location {loc['name']}: {e}")

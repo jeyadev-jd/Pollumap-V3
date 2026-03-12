@@ -28,7 +28,7 @@ export function useCurrentSnapshot(city, location) {
 }
 
 // History Hook
-export function useHistory(city, location, hours = 24) {
+export function useHistory(city, location, hours = 6) {
     const { data, error, isLoading } = useSWR(
         city && location ? `${API_BASE_URL}/history?city=${city}&location=${location}&hours=${hours}` : null,
         fetcher
@@ -38,11 +38,11 @@ export function useHistory(city, location, hours = 24) {
 
 // Forecast Hook
 export function useForecast(city, location, hours = 24) {
-    const { data, error, isLoading } = useSWR(
+    const { data, error, isLoading, mutate } = useSWR(
         city && location ? `${API_BASE_URL}/forecast?city=${city}&location=${location}&hours=${hours}` : null,
         fetcher
     );
-    return { forecast: data, isError: error, isLoading };
+    return { forecast: data, isError: error, isLoading, mutateForecast: mutate };
 }
 
 // OSM Sources Hook
@@ -52,4 +52,12 @@ export function useOsmSources(city) {
         fetcher
     );
     return { sources: data, isError: error, isLoading };
+}
+
+// Trigger XGBoost forecast generation (POST) — returns promise
+export async function generateForecast(city, location) {
+    const res = await axios.post(
+        `${API_BASE_URL}/forecast/generate?city=${encodeURIComponent(city)}&location=${encodeURIComponent(location)}`
+    );
+    return res.data;
 }

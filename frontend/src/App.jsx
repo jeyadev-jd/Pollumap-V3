@@ -12,41 +12,12 @@ import PollutantRadar from './components/PollutantRadar';
 import SourceApportionmentCard from './components/SourceApportionmentCard';
 import FireInsightsCard from './components/FireInsightsCard';
 import HealthAdvisoryCard from './components/HealthAdvisoryCard';
-import { useCities, useLocations, useCurrentSnapshot, useForecast } from './hooks/usePollumapAPI';
+import { useCities, useLocations, useCurrentSnapshot, useForecast, useHistory } from './hooks/usePollumapAPI';
 import { Sun, Thermometer, Car, Droplets } from 'lucide-react';
-import { Save, CheckCircle, Database } from 'lucide-react';
 
 function App() {
   const [theme, setTheme] = useState('dark'); // Default to dark premium
   const [activeTab, setActiveTab] = useState('dashboard');
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-
-  const handleSaveAnalysis = async () => {
-    setSaving(true);
-    try {
-      const payload = {
-        city: selectedCity,
-        location: selectedLocation,
-        timestamp: new Date().toISOString(),
-        aqi: snapshot?.aqi,
-        pollutants: pollutants
-      };
-      const res = await fetch('http://localhost:8000/api/analytics/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      if (res.ok) {
-        setSaved(true);
-        setTimeout(() => setSaved(false), 3000);
-      }
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setSaving(false);
-    }
-  };
 
   // API Hooks
   const { cities } = useCities();
@@ -64,6 +35,7 @@ function App() {
 
   const { snapshot, isLoading: snapLoading } = useCurrentSnapshot(selectedCity, selectedLocation);
   const { forecast } = useForecast(selectedCity, selectedLocation, 24);
+  const { history } = useHistory(selectedCity, selectedLocation, 6);
 
   const toggleTheme = () => {
     const newTheme = theme === 'light' ? 'dark' : 'light';
@@ -121,11 +93,7 @@ function App() {
     return Math.round(S_max * elevFactor * Math.max(0.3, cloudFactor));
   })();
 
-  const forecastData = forecast ? forecast.map(f => ({
-    day: new Date(f.forecast_for).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    pollutants: f.pollutants || {},
-    meteo: f.meteo || {}
-  })) : [];
+  // forecastData kept for legacy; ForecastCard now receives raw forecast directly
 
   // Only block the HOME tab when loading — map and iot always render
   const isHomeLoading = (locLoading || snapLoading) && !snapshot;
@@ -196,23 +164,14 @@ function App() {
                     <div>
                       <h2 style={{ fontSize: '20px', fontWeight: '700', marginBottom: '2px' }}>Public Health Analytics</h2>
                     </div>
-                    <button
-                      onClick={handleSaveAnalysis}
-                      disabled={saving || saved || !pollutants}
-                      style={{
-                        display: 'flex', alignItems: 'center', gap: '8px',
-                        padding: '8px 16px', borderRadius: '12px',
-                        background: saved ? '#10b981' : 'var(--accent-blue)',
-                        color: 'white', border: 'none', cursor: (saving || saved || !pollutants) ? 'not-allowed' : 'pointer',
-                        fontWeight: '600', transition: 'all 0.2s',
-                        boxShadow: 'var(--shadow-sm)', fontSize: '13px'
-                      }}
-                    >
-                      {saving ? <Database size={14} className="spin" /> : saved ? <CheckCircle size={14} /> : <Save size={14} />}
-                      {saving ? 'Saving...' : saved ? 'Logged' : 'Save Details'}
-                    </button>
                   </div>
-                  <HealthAdvisoryCard aqi={snapshot?.aqi} pollutants={pollutants} style={{ height: '100%', minHeight: '300px' }} />
+                  <HealthAdvisoryCard
+                    city={selectedCity}
+                    location={selectedLocation}
+                    aqi={snapshot?.aqi}
+                    pollutants={pollutants}
+                    style={{ height: '100%', minHeight: '300px' }}
+                  />
                 </div>
 
                 {/* Row 5: Charts */}
@@ -227,7 +186,12 @@ function App() {
                   />
                 </div>
                 <div className="bottom-chart-section">
-                  <ForecastCard forecast={forecastData} title="24-Hour Forecast" style={{ height: '100%', minHeight: '320px' }} />
+                  <ForecastCard
+                    history={history || []}
+                    forecast={forecast || []}
+                    title="24-Hour Forecast"
+                    style={{ height: '100%', minHeight: '320px' }}
+                  />
                 </div>
                 <div className="bottom-chart-section">
                   <RainChart rainfall={null} currentRain={meteo.rainfall} style={{ height: '100%', minHeight: '320px' }} />
