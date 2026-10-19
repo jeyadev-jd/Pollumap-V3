@@ -3,7 +3,9 @@ import os
 from typing import List, Dict, Any
 from app.db.database import get_database
 
-WAQI_API_TOKEN = os.getenv("WAQI_API_TOKEN", "da77cadeed5012f680511ebc6714745443487a0d")
+WAQI_API_TOKEN = os.getenv("WAQI_API_TOKEN")  # required; never hardcode a key
+if not WAQI_API_TOKEN:
+    print("[waqi] WAQI_API_TOKEN is not set; WAQI requests will fail.")
 POLLUTANTS = ['pm25', 'pm10', 'o3', 'no2', 'so2', 'co', 'voc']
 
 async def fetch_waqi_station_metadata(city: str) -> List[Dict[str, Any]]:

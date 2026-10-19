@@ -1,3 +1,11 @@
+"""
+Indicative source attribution (HEURISTIC, not source apportionment).
+
+The shares come from fixed city-wide proportions per pollutant (CITY_BASE_APPORTIONMENT),
+adjusted by a traffic index and by wind alignment with mapped sources. They are assumptions,
+not measured source profiles, and no receptor model (PMF, CMB) is involved. Present the
+output as an indicative attribution, never as measured source contributions.
+"""
 import math
 from typing import Dict, List, Any
 import numpy as np

@@ -1,9 +1,10 @@
+import os
 from fastapi import APIRouter, Query, HTTPException, Body
 from typing import List, Optional, Dict, Any
 from app.db.database import get_database
 from app.services.core_logic.routing import evaluate_routes, lookup_area, search_areas
 from app.services.fetchers.firms import fetch_firms_data
-from app.services.core_logic.forecasting import generate_xgb_forecast
+from app.services.core_logic.forecasting import generate_xgb_forecast, load_history, fetch_meteo_forecast, MODEL_VERSION
 from app.services.core_logic.health_insights import generate_local_ai_insight
 import datetime
 
@@ -158,9 +159,9 @@ async def get_forecast(city: str, location: str, hours: int = Query(24)):
 async def generate_forecast(city: str, location: str):
     """
     Trigger XGBoost forecast generation for a specific city+location.
-    Pulls the latest snapshot from DB as the anchor, trains XGBoost on
-    synthetic historical data, predicts 24 h, clears old forecasts, and
-    inserts the new ones into MongoDB.
+    Trains XGBoost on the real snapshots stored for this location, predicts
+    24 h, clears old forecasts and inserts the new ones. Returns 409 when
+    there is not enough history; it never fabricates a forecast.
     """
     db = get_database()
 
@@ -175,27 +176,30 @@ async def generate_forecast(city: str, location: str):
             detail=f"No snapshot data found for {location} in {city}. Run the worker first."
         )
 
-    current_pollutants = latest.get("pollutants_final", {})
-    current_meteo      = latest.get("meteo", {})
-    location_doc       = {"city": city, "name": location,
-                          "lat": latest.get("lat"), "lon": latest.get("lon")}
+    location_doc = {"city": city, "name": location,
+                    "lat": latest.get("lat"), "lon": latest.get("lon")}
 
-    # ── 2. Run XGBoost pipeline ────────────────────────────────────────────
-    forecasts = generate_xgb_forecast(
-        location_doc, current_pollutants, current_meteo, hours_ahead=24
-    )
+    # ── 2. Train on real stored history; real weather forecast for meteorology ──
+    history = await load_history(db, city, location)
+    meteo_fc = fetch_meteo_forecast(latest.get("lat"), latest.get("lon"), 24)
+    forecasts = generate_xgb_forecast(location_doc, history, meteo_fc, hours_ahead=24)
+    if not forecasts:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Not enough stored history for {location} in {city} to forecast "
+                   f"({len(history)} snapshots). The worker must run for several days first."
+        )
 
     # ── 3. Clear stale forecasts, insert fresh ones ────────────────────────
     await db.aqi_forecasts.delete_many({"city": city, "location": location})
-    if forecasts:
-        await db.aqi_forecasts.insert_many(forecasts)
+    await db.aqi_forecasts.insert_many(forecasts)
 
     return {
         "status": "ok",
         "message": f"Generated {len(forecasts)} XGBoost forecast points for {location}.",
-        "model": "xgboost_v1",
+        "model": MODEL_VERSION,
+        "trained_on_hours": forecasts[0].get("trained_on_hours"),
         "anchor_timestamp": latest.get("timestamp"),
-        "pollutants_anchor": current_pollutants,
     }
 
 
@@ -222,7 +226,10 @@ async def get_fires(city: str):
         bounds = [79.8, 12.7, 80.4, 13.3]
     else:
         bounds = [76.8, 28.4, 77.4, 28.9]
-    fires = await fetch_firms_data("c72502e93dc1a16b9c2ceff0c95043fc", bounds)
+    firms_key = os.getenv("NASA_FIRMS_API_KEY")
+    if not firms_key:
+        return []  # no key configured: report no data rather than failing or guessing
+    fires = await fetch_firms_data(firms_key, bounds)
     return fires
 
 @router.post("/analytics/save")

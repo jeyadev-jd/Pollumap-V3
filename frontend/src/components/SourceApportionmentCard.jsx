@@ -53,7 +53,7 @@ const SourceApportionmentCard = ({ sourcesData, style }) => {
     return (
         <div className="card" style={{ height: '100%', display: 'flex', flexDirection: 'column', ...style }}>
             <div className="card-header" style={{ marginBottom: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <h3 className="card-title" style={{ fontSize: '15px' }}>Emission Sources</h3>
+                <h3 className="card-title" style={{ fontSize: '15px' }}>Indicative Emission Sources</h3>
                 <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
                     {availablePolls.map(p => (
                         <button

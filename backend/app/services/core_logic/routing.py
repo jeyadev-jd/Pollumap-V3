@@ -16,7 +16,6 @@ import hashlib
 import datetime
 import re
 import networkx as nx
-import geopandas as gpd
 from typing import List, Dict, Optional
 from app.db.database import get_database
 
@@ -30,7 +29,8 @@ MODE_CONFIG = {
 }
 
 # ─── Graph (loaded once) ───────────────────────────────────────────────────────
-KML_FILE = "/home/jeyadev/Pollumap V3/chennai.kml"
+import os
+KML_FILE = os.getenv("POLLUMAP_KML", os.path.join(os.path.dirname(__file__), "..", "..", "..", "data", "chennai.kml"))
 _G: Optional[nx.Graph] = None
 _nodes_list: list = []
 _lock = asyncio.Lock()
@@ -51,6 +51,7 @@ async def get_graph() -> nx.Graph:
 def _build_graph():
     G = nx.Graph()
     try:
+        import geopandas as gpd  # imported lazily so the module loads without GIS dependencies
         roads = gpd.read_file(KML_FILE, driver="KML")
         for geom in roads.geometry:
             if geom is None:
@@ -162,47 +163,48 @@ def _astar(G, src, dst, weight_fn=None):
         return None
 
 
-def _build_routes(G, src, dst):
+# Weight on estimated pollution in the edge cost of the pollution-aware routes.
+# cost(edge) = length * (1 + alpha * C_cell / C_ref), so cost is never below length and the
+# haversine heuristic stays admissible. Larger alpha trades distance for cleaner air.
+ROUTE_ALPHA = {"cleanest": 4.0, "balanced": 1.0}
+_CELL_DEG = 0.005  # about 550 m: concentration is evaluated once per cell and cached
+
+
+def _exposure_weight_fn(stations, alpha):
+    """Edge-cost callable that charges for the estimated concentration at the edge midpoint."""
+    if not stations or alpha <= 0:
+        return None
+    ref = sum(_C(s) for s in stations) / len(stations) or 1.0
+    cache = {}
+
+    def weight(u, v, data):
+        lat, lon = (u[1] + v[1]) / 2.0, (u[0] + v[0]) / 2.0
+        cell = (round(lat / _CELL_DEG), round(lon / _CELL_DEG))
+        c = cache.get(cell)
+        if c is None:
+            c = cache[cell] = _C(_idw(lat, lon, stations))
+        return data.get("weight", 1.0) * (1.0 + alpha * c / ref)
+
+    return weight
+
+
+def _build_routes(G, src, dst, stations=None):
     """
-    Generate 3 geometrically distinct routes using pure distance-based A*.
+    Three routes:
+      fastest  -> A* on edge length
+      cleanest -> A* on length weighted by estimated concentration (alpha = ROUTE_ALPHA["cleanest"])
+      balanced -> same with a smaller alpha (ROUTE_ALPHA["balanced"])
 
-    Strategy (NO per-edge IDW — that was the perf killer):
-      fastest  → A* with raw distance weight
-      cleanest → A* with fastest-path edges penalised ×25 (forces detour)
-      balanced → A* with fastest-path edges penalised ×6 (mild detour)
-
-    Exposure (E = C × IR × t) is computed AFTER path selection via point sampling.
+    Pollution enters the edge cost, so the cleaner routes are actually optimised for the
+    estimated concentration field. If the field is nearly uniform (for example when it comes
+    from a coarse model such as CAMS) the three routes may coincide; that is reported, not forced.
+    Exposure (E = C * IR * t) is still computed afterwards by point sampling.
     """
-
-    # ── Path 1: fastest (standard A*) ────────────────────────────────────────
     path_fast = _astar(G, src, dst)
     if not path_fast:
         return None, None, None
-
-    # Build edge set for fastest path
-    fast_edges = set()
-    for i in range(len(path_fast) - 1):
-        u, v = path_fast[i], path_fast[i+1]
-        fast_edges.add((u, v))
-        fast_edges.add((v, u))
-
-    # ── Path 2: cleanest — heavy detour away from fastest path ───────────────
-    def clean_weight(u, v, data):
-        # No IDW here — just geometric detour penalty
-        return data.get("weight", 1) * (25.0 if (u, v) in fast_edges else 1.0)
-
-    path_clean = _astar(G, src, dst, weight_fn=clean_weight)
-    if path_clean is None:
-        path_clean = path_fast
-
-    # ── Path 3: balanced — moderate detour ───────────────────────────────────
-    def bal_weight(u, v, data):
-        return data.get("weight", 1) * (6.0 if (u, v) in fast_edges else 1.0)
-
-    path_bal = _astar(G, src, dst, weight_fn=bal_weight)
-    if path_bal is None:
-        path_bal = path_fast
-
+    path_clean = _astar(G, src, dst, weight_fn=_exposure_weight_fn(stations, ROUTE_ALPHA["cleanest"])) or path_fast
+    path_bal = _astar(G, src, dst, weight_fn=_exposure_weight_fn(stations, ROUTE_ALPHA["balanced"])) or path_fast
     return path_fast, path_clean, path_bal
 
 
@@ -341,10 +343,10 @@ async def evaluate_routes(city, start_lat, start_lon, end_lat, end_lon, mode="ca
     if src not in subG or dst not in subG:
         return {"error": "Could not create a valid routing boundary."}
 
-    # Build 3 paths via A* with pure geometric penalty (no per-edge IDW)
+    # Build 3 paths via A*; the cleaner two use a pollution-weighted edge cost
     loop = asyncio.get_event_loop()
     path_fast, path_clean, path_bal = await loop.run_in_executor(
-        None, _build_routes, subG, src, dst
+        None, _build_routes, subG, src, dst, st
     )
 
     if not path_fast:
@@ -385,6 +387,8 @@ async def evaluate_routes(city, start_lat, start_lon, end_lat, end_lon, mode="ca
         "mode_comparison": mode_comparison,
         "saving_ug": saving_ug, "saving_pct": saving_pct,
         "candidates_count": 3,
+        "cleanest_differs_from_fastest": path_clean != path_fast,
+        "exposure_model": "E = C x IR x t with fixed pollutant weights and inhalation rates; concentration field = interpolated stored snapshots",
         "start": {"lat": start_lat, "lon": start_lon},
         "end":   {"lat": end_lat,   "lon": end_lon},
         "city": city, "mode": mode, "_cached": False,

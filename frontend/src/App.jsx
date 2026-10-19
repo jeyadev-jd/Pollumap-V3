@@ -145,8 +145,8 @@ function App() {
                   <div className="stats-grid" style={{ height: '100%', minHeight: '150px', display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '20px' }}>
                     <StatCard icon={<Sun size={20} />} label="Solar Radiation" value={`${solarRadiation} W/m²`} desc="Peak Sunlight" />
                     <StatCard icon={<Thermometer size={20} />} label="Feels like" value={`${apparentTemp.toFixed(0)}°`} desc="Heat Index" />
-                    <StatCard icon={<Car size={20} />} label="Traffic Index" value={`${(meteo.traffic_index || 40).toFixed(0)}`} desc="Live Congestion Severity" />
-                    <StatCard icon={<Droplets size={20} />} label="Humidity" value={`${(meteo.relative_humidity_2m || 65).toFixed(0)}%`} desc="Relative Humidity" />
+                    <StatCard icon={<Car size={20} />} label="Traffic Index" value={meteo.traffic_index != null ? `${Number(meteo.traffic_index).toFixed(0)}` : "n/a"} desc={meteo.traffic_index != null ? "Congestion index" : "No traffic data source"} />
+                    <StatCard icon={<Droplets size={20} />} label="Humidity" value={meteo.relative_humidity_2m != null ? `${Number(meteo.relative_humidity_2m).toFixed(0)}%` : "n/a"} desc="Relative Humidity" />
                   </div>
                 </div>
 

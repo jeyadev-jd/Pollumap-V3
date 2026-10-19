@@ -1,4 +1,5 @@
 import asyncio
+import os
 import datetime
 from app.db.database import get_database, connect_to_mongo, close_mongo_connection
 from app.services.fetchers.waqi import fetch_live_waqi_data, fetch_waqi_station_metadata
@@ -6,7 +7,7 @@ from app.services.fetchers.overpass import fetch_city_areas, fetch_osm_sources
 from app.services.fetchers.meteo import fetch_meteo_data, fetch_cams_data
 from app.services.fetchers.firms import fetch_firms_data
 from app.services.core_logic.apportionment import apportion_sources
-from app.services.core_logic.forecasting import generate_xgb_forecast
+from app.services.core_logic.forecasting import generate_xgb_forecast, load_history, fetch_meteo_forecast
 
 POLLUTANTS = ['pm25', 'pm10', 'o3', 'no2', 'so2', 'co', 'voc']
 
@@ -87,12 +88,14 @@ async def hourly_pipeline():
         osm_sources_cursor = db.osm_sources.find({"city": city})
         osm_sources = await osm_sources_cursor.to_list(length=None)
         
-        # NASA FIRMS data 
-        if city == "Chennai":
-            firms_fires = await fetch_firms_data("c72502e93dc1a16b9c2ceff0c95043fc", [79.8, 12.7, 80.4, 13.3])
-        else:
-            firms_fires = await fetch_firms_data("c72502e93dc1a16b9c2ceff0c95043fc", [76.8, 28.4, 77.4, 28.9])
-        
+        # NASA FIRMS data. The key comes from the environment; without it fires are skipped
+        # (never hardcode keys in source control).
+        firms_key = os.getenv("NASA_FIRMS_API_KEY")
+        bounds = [79.8, 12.7, 80.4, 13.3] if city == "Chennai" else [76.8, 28.4, 77.4, 28.9]
+        firms_fires = await fetch_firms_data(firms_key, bounds) if firms_key else []
+        if not firms_key:
+            print("  [FIRMS] NASA_FIRMS_API_KEY not set; fire data skipped.")
+
         # In a real scenario, we'd batch these up. 
         # For this prototype structure, we process the first 5 locations to avoid rate limits instantly.
         for loc in locations[:5]:
@@ -104,20 +107,17 @@ async def hourly_pipeline():
                 meteo = meteo_res[0].get('current', {}) if meteo_res else {}
                 cams = cams_res[0].get('current', {}) if cams_res else {}
                 
-                # Format CAMS to standard pollutant keys (handle explicit None from API)
-                base_pollutants = {
-                    'pm25': float(cams.get('pm2_5') if cams.get('pm2_5') is not None else 25.0),
-                    'pm10': float(cams.get('pm10') if cams.get('pm10') is not None else 45.0),
-                    'o3': float(cams.get('ozone') if cams.get('ozone') is not None else 30.0),
-                    'no2': float(cams.get('nitrogen_dioxide') if cams.get('nitrogen_dioxide') is not None else 20.0),
-                    'so2': float(cams.get('sulphur_dioxide') if cams.get('sulphur_dioxide') is not None else 5.0),
-                    'co': float(cams.get('carbon_monoxide') if cams.get('carbon_monoxide') is not None else 0.5),
-                    'voc': 15.0 # Stub
-                }
-                
-                # Traffic proxy (stub logic mimicking pollumapv3.py)
-                meteo['traffic_index'] = 45.0 + (datetime.datetime.now().hour % 12) * 5
-                
+                # Format CAMS to standard pollutant keys. Missing values are NOT replaced with
+                # invented defaults: a location with an incomplete reading is skipped this cycle.
+                cams_map = {'pm25': 'pm2_5', 'pm10': 'pm10', 'o3': 'ozone', 'no2': 'nitrogen_dioxide',
+                            'so2': 'sulphur_dioxide', 'co': 'carbon_monoxide'}
+                base_pollutants = {k: cams.get(v) for k, v in cams_map.items()}
+                missing = [k for k, v in base_pollutants.items() if v is None]
+                if missing:
+                    print(f"  [skip] {loc['name']}: no CAMS value for {missing}")
+                    continue
+                base_pollutants = {k: float(v) for k, v in base_pollutants.items()}
+
                 # 2. Source Apportionment
                 sources = apportion_sources(loc, base_pollutants, osm_sources, meteo, firms_fires)
                 
@@ -137,26 +137,27 @@ async def hourly_pipeline():
                     "aqi_color": aqi_color,
                     "sub_indices": sub_indices,
                     "pollutants_final": base_pollutants,
+                    "pollutants_source": "CAMS via Open-Meteo (model grid, not station measurements)",
                     "sources": sources,
                     "meteo": meteo
                 }
                 
                 await db.aqi_snapshots.insert_one(snapshot)
 
-                # 5. XGBoost Forecast (clear stale forecasts then insert fresh)
+                # 5. Forecast from real stored history (empty list when history is too short)
                 try:
-                    forecasts = generate_xgb_forecast(
-                        loc, base_pollutants, meteo, hours_ahead=24
-                    )
+                    history = await load_history(db, city, loc["name"])
+                    meteo_fc = fetch_meteo_forecast(loc["lat"], loc["lon"], 24)
+                    forecasts = generate_xgb_forecast(loc, history, meteo_fc, hours_ahead=24)
                     if forecasts:
                         await db.aqi_forecasts.delete_many(
                             {"city": city, "location": loc["name"]}
                         )
                         await db.aqi_forecasts.insert_many(forecasts)
-                        print(f"  [XGBoost] Saved {len(forecasts)} forecasts for {loc['name']}")
+                        print(f"  [forecast] Saved {len(forecasts)} points for {loc['name']}")
                 except Exception as fe:
-                    print(f"  [XGBoost] Forecast error for {loc['name']}: {fe}")
-                    
+                    print(f"  [forecast] Error for {loc['name']}: {fe}")
+
             except Exception as e:
                 print(f"Error processing location {loc['name']}: {e}")
                 
